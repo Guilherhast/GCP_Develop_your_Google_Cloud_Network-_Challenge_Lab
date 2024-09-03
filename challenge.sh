@@ -26,6 +26,7 @@ REGION=${ZONE%-*}
 
 
 ADMINEMAIL=admin@gmail.com
+ENGINEEREMAIL=engineer@gmail.com
 
 ### Development network
 
@@ -53,10 +54,11 @@ PRODNETSUBNET2RANGE=192.168.64.0/20
 
 BASTIONISNTANCENAME=bastion
 BASTIONNETWORKTAGS=bastion-server
-BASTIANINSTANCETYPE=e2-micro
+BASTIANINSTANCETYPE=e2-medium
 
-WEBSERVERISNTANCENAME=webserver
-WEBSERVERNETWORKTAGS=web-server
+TAGALLOWSSH=allow-ssh
+TAGLIST=$TAGALLOWSSH
+
 
 ## Sql
 
@@ -85,11 +87,12 @@ CLUSTERNAME=griffin-dev
 CLUSTERSUBNET=$DEVNETSUBNET1NAME
 CLUSTERNUMNODES=2
 
+SERVICENAME=wordpress
+
 ## Health check
 HEALTHCHECKNAME=health-check
 
 ## Access
-ENGINEEREMAIL=engineer@gmail.com
 
 ## Function definitions
 function setUpProject(){
@@ -109,9 +112,11 @@ function createDevelopmentNetwork(){
 	$CLOUDCMD compute networks subnets create $DEVNETSUBNET2NAME \
 		--network=$DEVNETNAME \
 		--range=$DEVNETSUBNET2RANGE
+
 }
 
 function createProductionNetwork(){
+
 	$CLOUDCMD compute networks create $PRODNETNAME \
 		--subnet-mode=custom &&
 
@@ -122,6 +127,7 @@ function createProductionNetwork(){
 	$CLOUDCMD compute networks subnets create $PRODNETSUBNET2NAME \
 		--network=$PRODNETNAME \
 		--range=$PRODNETSUBNET2RANGE
+
 }
 
 function createBastianInstance(){
@@ -129,7 +135,21 @@ function createBastianInstance(){
 	$CLOUDCMD compute instances create instance-name \
 		--machine-type $BASTIANINSTANCETYPE \
 		--network-interface $PRODNETNAME \
-		--network-interface $DEVNETNAME
+		--network-interface $DEVNETNAME \
+		--network-interface=network=$PRODNETNAME,subnet=$PRODNETSUBNET2NAME \
+		--network-interface=network=$DEVNETNAME,subnet=$DEVNETSUBNET2NAME \
+		--tags=$TAGLIST &&
+
+
+	$CLOUDCMD compute firewall-rules create $DEVNETNAME-allow-ssh \
+		--network=$DEVNETNAME \
+		--allow=tcp:22 --description="Allow SSH" \
+		--direction=INGRESS --target-tags=$TAGALLOWSSH &&
+
+	$CLOUDCMD compute firewall-rules create $PRODNETNAME-allow-ssh \
+		--network=$PRODNETNAME \
+		--allow=tcp:22 --description="Allow SSH" \
+		--direction=INGRESS --target-tags=$TAGALLOWSSH
 
 }
 
@@ -137,30 +157,30 @@ function createSqlInstance(){
 
 	$CLOUDCMD sql instances create $SQLNAME \
 		--database-version=$SQLVERSION \
-		--root-password=$SQLROOTPASSWORD \
-		--high-availability-tier=REGIONAL &&
+		--root-password=$SQLROOTPASSWORD &&
 
 	export SQLROOTPASSWORD=$SQLROOTPASSWORD
 	echo -e Root password: "${ORANGE}$SQLROOTPASSWORD${RESETCOLOR}"
 
-	#ln -s ./wp-k8s $HOME/wp-k8s  &&
-
-
 	$CLOUDCMD sql connect "${SQLNAME}" --user=root \
-	--quiet <<EOF
-	${SQLQUERY}
+		--quiet <<EOF
+		${SQLQUERY}
 EOF
 
 }
 
 function editKubernetesFiles(){
+
 	sed -i "18c\ \ username: ${SQLUSERNAME}" $KBNENVFILE &&
 	sed -i "19c\ \ password: ${SQLUSERPASSWORD}" $KBNENVFILE &&
-	sed -i "42c\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \"-instances=$SQLNAME=tcp:3306\"" $KBNDEPLOYFILE
+	sed -i "42c\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \"-instances=$SQLNAME=tcp:3306\"," $KBNDEPLOYFILE
+
 }
 
 function createKubernetesCluster(){
+
 	$CLOUDCMD container clusters create $CLUSTERNAME \
+		--network=$DEVNETNAME --subnetwork=$DEVNETSUBNET1NAME \
 		--num-nodes=$CLUSTERNUMNODES &&
 
 	$CLOUDCMD iam service-accounts keys create key.json \
@@ -168,22 +188,37 @@ function createKubernetesCluster(){
 
 	$KUBECMD create secret generic cloudsql-instance-credentials \
 		--from-file key.json
+
 }
+
+function createVolumeAndEnviroment(){
+
+	$KUBECMD create -f $KBNENVFILE
+
+}
+
 function createKubernetesDeployments(){
+
 	$KUBECMD create -f $KBNDEPLOYFILE
+
 }
+
 function createKubernetesServive(){
+
 	$KUBECMD create -f $KBNSERVICEFILE
+
 }
 
 function kubernetesGetUrls(){
-	URL=$($KUBECMD get svc \
+
+	URL=$($KUBECMD get svc $SERVICENAME \
 		-o=jsonpath="{.status.loadBalancer.ingress[0].ip}")
-	echo -e "URL: ${BLUE}$URL${RESETCOLOR}" 
+	echo -e "URL: ${BLUE}$URL${RESETCOLOR}"
+
 }
 
 function createUptimeCheck(){
-	URL=$($KUBECMD get svc \
+	URL=$($KUBECMD get svc $SERVICENAME \
 		-o=jsonpath="{.status.loadBalancer.ingress[0].ip}") &&
 
 
@@ -191,16 +226,17 @@ function createUptimeCheck(){
 		--http-path / \
 		--resource-type uptime-url \
 		--resource-labels=host=$URL,project_id=$PROJECT \
-		--check-interval 60s \
-		--timeout 10s \
+		--check-interval 60 \
+		--timeout 10 \
 		--host $URL
 
 }
 
 function grantAccess(){
+
 	$CLOUDCMD projects add-iam-policy-binding $PROJECT \
-    --member=user:$ENGINEEREMAIL \
-    --role=roles/editor
+		--member=user:$ENGINEEREMAIL \
+		--role=roles/editor
 
 }
 
@@ -226,9 +262,11 @@ createBastianInstance &&
 echoDivision "Create sql" &&
 createSqlInstance &&
 echoDivision "Editing files" &&
-editKubernetesFiles &&
+#editKubernetesFiles &&
 echoDivision "Create kubernetes cluster" &&
 createKubernetesCluster &&
+echoDivision "Create kubernetes volume" &&
+createVolumeAndEnviroment &&
 echoDivision "Create kubernetes deployment" &&
 createKubernetesDeployments &&
 echoDivision "Create kubernetes service" &&
