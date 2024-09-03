@@ -8,6 +8,8 @@
 CLOUDCMD=echo
 KUBECMD=echo
 #KUBECMD=kubectl
+# Go to the end and uncomment this line: 264
+#editKubernetesFiles &&
 
 RESETCOLOR='\033[0m'
 GREEN='\033[0;32m'
@@ -134,8 +136,6 @@ function createBastianInstance(){
 
 	$CLOUDCMD compute instances create instance-name \
 		--machine-type $BASTIANINSTANCETYPE \
-		--network-interface $PRODNETNAME \
-		--network-interface $DEVNETNAME \
 		--network-interface=network=$PRODNETNAME,subnet=$PRODNETSUBNET2NAME \
 		--network-interface=network=$DEVNETNAME,subnet=$DEVNETSUBNET2NAME \
 		--tags=$TAGLIST &&
@@ -223,12 +223,11 @@ function createUptimeCheck(){
 
 
 	$CLOUDCMD monitoring uptime create $HEALTHCHECKNAME \
-		--http-path / \
+		--path / \
 		--resource-type uptime-url \
 		--resource-labels=host=$URL,project_id=$PROJECT \
 		--check-interval 60 \
-		--timeout 10 \
-		--host $URL
+		--timeout 10
 
 }
 
@@ -272,10 +271,10 @@ createKubernetesDeployments &&
 echoDivision "Create kubernetes service" &&
 createKubernetesServive &&
 echoDivision "Sleeping" &&
-sleep $DELAY
+sleep $DELAY &&
 echoDivision "Getting urls" &&
 kubernetesGetUrls &&
-echoDivision "Getting urls" &&
+echoDivision "Creating health check" &&
 createUptimeCheck &&
 echoDivision "Grantting access" &&
 grantAccess &&
